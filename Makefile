@@ -12,7 +12,7 @@ API_KEY ?= EMPTY
 MODEL_NAME ?= Qwen3.5-4B-GGUF
 
 .PHONY: help refresh-source-cache source-cache extract-torch build up down build-log runtime-log logs status smoke \
-	sm61-source-cache sm61-extract-torch sm61-build sm61-up sm61-down sm61-build-log \
+	sm61-source-cache sm61-extract-torch sm61-build sm61-up sm61-down sm61-build-log fetch-torch \
 	dflash-bench dflash-smoke
 
 help: ## Show available targets
@@ -30,6 +30,9 @@ extract-torch: ## Extract custom torch from a post-torch image layer
 	sh ./scripts/extract-sm61-torch-artifact.sh
 
 sm61-extract-torch: extract-torch
+
+fetch-torch: ## Download the prebuilt sm_61 torch wheel (skips the hours-long build)
+	sh ./scripts/fetch-torch-artifact.sh
 
 build: ## Build local/vllm-openai:sm61
 	sh ./scripts/build-sm61-image.sh

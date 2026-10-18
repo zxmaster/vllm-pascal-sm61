@@ -14,7 +14,7 @@
 
 | Артефакт | Путь | Размер | Критичность |
 |---|---|---|---|
-| Компилированный torch (sm_61) | `artifacts/torch/site-packages/current/` (symlink → `extract-20260903T012735Z`) | ~850 МБ | 🔴 **высшая** (часы сборки) |
+| Компилированный torch (sm_61) | `artifacts/torch/site-packages/current/` (symlink → `extract-20260903T012735Z`) | ~850 МБ | 🔴 **высшая** (часы сборки) — либо скачать готовый wheel: `scripts/fetch-torch-artifact.sh` |
 | Docker-образ v0.29 (основной) | `local/vllm-openai:sm61-v029` | ~46 ГБ распак. | 🔴 **высшая** |
 | Docker-образ v0.28 (резерв/откат) | `local/vllm-openai:sm61-v028` | ~45 ГБ распак. | 🟡 для отката |
 | ~~v0.18~~ | — | — | ✅ списан 16.09 (образ утрачен) |
@@ -27,6 +27,12 @@
 | Git-кэши сборки | `docker/sm61/git-cache/` | — | ⚪ (нужны только для пересборки) |
 
 `volumes/vllm-cache/` (кэш компиляции vLLM) пересоберётся сам — переносить не обязательно.
+
+**Torch не обязательно переносить руками:** на машине без артефакта достаточно
+`./scripts/fetch-torch-artifact.sh` — он скачивает prebuilt sm_61 wheel из GitHub
+Releases (`zxmaster/vllm-pascal-sm61`), сверяет SHA-256 и раскладывает в
+`artifacts/torch/site-packages/current/`. Дальше `build-sm61-image.sh` сам видит дерево и
+ставит `SM61_USE_TORCH_ARTIFACT=1`. Источник, состав и проверки — `docs/RELEASE-TORCH.md`.
 
 **Профили без секретов:** в репо `API_KEY=EMPTY` (плейсхолдер). Реальные секреты в репо не хранятся.
 

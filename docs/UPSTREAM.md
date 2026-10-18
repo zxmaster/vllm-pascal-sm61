@@ -17,7 +17,15 @@
   `docker/sm61/Dockerfile.v028` (сборка образа).
 - Сборка: `scripts/build-sm61-source-cache.sh` → `scripts/build-sm61-image.sh`
   (или `make`), **torch не пересобирается** при `SM61_USE_TORCH_ARTIFACT=1`
-  (артефакт `artifacts/torch/site-packages/current/`).
+  (артефакт `artifacts/torch/site-packages/current/`; если его нет —
+  `scripts/fetch-torch-artifact.sh` скачает prebuilt sm_61 wheel из GitHub Releases,
+  см. `docs/RELEASE-TORCH.md`; образ, из которого артефакт извлечён вручную —
+  `scripts/extract-sm61-torch-artifact.sh`).
+- Torch bump (новый `SM61_TORCH_REF`) = новый артефакт: сборочный цикл с
+  `SM61_USE_TORCH_ARTIFACT=0` → `extract-sm61-torch-artifact.sh` →
+  `package-torch-wheel.py` → `release-torch-artifact.sh` (тег с суффиксом `-rN`)
+  и обновление пина `SM61_TORCH_TAG/_SHA256` в `scripts/fetch-torch-artifact.sh`.
+  Старое поколение артефакта не удалять: релиз остаётся точкой отката.
 - Образы: основной `local/vllm-openai:sm61-v029`; резерв/откат `local/vllm-openai:sm61-v028` (v0.18 списан 16.09).
 
 ## 2. Слои нашего кода в собранном образе

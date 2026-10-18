@@ -77,19 +77,58 @@ If you prefer to build torch yourself, nothing else is needed — leave
 (`SM61_USE_TORCH_ARTIFACT=0`), which is also how a new artifact is produced:
 `scripts/extract-sm61-torch-artifact.sh` → `scripts/package-torch-wheel.py`.
 
-## Build and run (short version)
+## From a fresh clone to the first token
+
+Prerequisites: x86-64 Linux, NVIDIA GPU with compute capability **6.1**, driver, Docker with
+the `nvidia` runtime (nvidia-container-toolkit), ~150 GB free disk. `prepare-host.sh`
+checks all of that and creates the directory layout, the external `intranet_net` network and
+`.env.v031` for you.
 
 ```bash
-# 1. Get the prebuilt torch (skips hours of CPU) and build the image
-./scripts/fetch-torch-artifact.sh
-SM61_ENV_FILE=.env.v031 ./scripts/build-sm61-source-cache.sh
-SM61_ENV_FILE=.env.v031 ./scripts/build-sm61-image.sh
+git clone https://github.com/zxmaster/vllm-pascal-sm61 && cd vllm-pascal-sm61
 
-# 2. Start the stack
+./scripts/prepare-host.sh            # checks GPU/driver/docker/disk, makes dirs + net + .env.v031
+./scripts/fetch-torch-artifact.sh    # prebuilt torch wheel: download, verify, unpack
+./scripts/prepare-model.sh           # GGUF weights + tokenizer + config.json (not redistributed here)
+
+SM61_ENV_FILE=.env.v031 ./scripts/build-sm61-source-cache.sh   # clones upstream torch + vLLM
+SM61_ENV_FILE=.env.v031 ./scripts/build-sm61-image.sh          # compiles vLLM for sm_61
+
 VLLM_ENV_FILE=.env.v031 docker compose -f compose.sm61-v031.yaml up -d
 
-# 3. First request loads the model (lazy, ~3 min on this hardware)
-curl -H 'Authorization: Bearer EMPTY' http://127.0.0.1:8000/v1/models
+# the backend loads the model lazily on the first request (~3 min on a GTX 1050)
+curl -s -H 'Authorization: Bearer EMPTY' http://127.0.0.1:8000/v1/models
+```
+
+Typical wall-clock on a 4-core laptop (i7-7700HQ, MAX_JOBS=4), reference run:
+
+| Step | Time | Notes |
+|---|---|---|
+| `prepare-host.sh` | seconds | idempotent |
+| `fetch-torch-artifact.sh` | ~2 min | 288 MB download + unpack |
+| `prepare-model.sh` | minutes | 2.3 GiB GGUF + tokenizer; network-bound |
+| `build-sm61-source-cache.sh` | 10–30 min | git clones of torch + vLLM (submodules) |
+| `build-sm61-image.sh` | **~40 min** | vLLM compiled for `sm_61`; torch build skipped |
+| first request | ~3 min | lazy load, KV pool printed in the log |
+
+The torch compile — the step that used to dominate — is gone: the wheel replaces several
+hours of CPU time. If you skip `fetch-torch-artifact.sh`, the same build compiles torch from
+source instead.
+
+Expected log markers from a healthy start (`docker logs vllm-openai-v031`):
+
+```
+[Pascal] runtime patches applied: ['sdpa', 'gguf_adapter', 'gguf_quant', 'tq_backend', ...]
+GPU KV cache size: 45,251 tokens          # MAX_MODEL_LEN=32768, GPU_MEMORY_UTILIZATION=0.85
+Application startup complete.
+```
+
+Say hello:
+
+```bash
+curl -s http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Authorization: Bearer EMPTY' -H 'Content-Type: application/json' \
+  -d '{"model":"Qwen3.5-4B-GGUF","messages":[{"role":"user","content":"Capital of France?"}],"max_tokens":32}'
 ```
 
 See `docs/MIGRATION.md` for the full checklist, volume layout, and rollback steps.

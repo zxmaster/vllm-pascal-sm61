@@ -27,7 +27,9 @@ result of that build, packaged so that it can simply be downloaded.
 ```bash
 git clone https://github.com/zxmaster/vllm-pascal-sm61 && cd vllm-pascal-sm61
 
-./scripts/fetch-torch-artifact.sh          # downloads, verifies sha256, unpacks
+./scripts/prepare-host.sh              # GPU/docker/disk checks, dirs, intranet_net, .env.v031
+./scripts/fetch-torch-artifact.sh      # downloads, verifies sha256, unpacks
+./scripts/prepare-model.sh             # GGUF + tokenizer + config.json
 SM61_ENV_FILE=.env.v031 ./scripts/build-sm61-source-cache.sh
 SM61_ENV_FILE=.env.v031 ./scripts/build-sm61-image.sh   # torch build skipped
 ```

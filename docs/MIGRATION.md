@@ -62,7 +62,11 @@ git clone https://github.com/zxmaster/vllm-pascal.git && cd vllm-pascal
 `intranet_net` (Traefik; для локального использования достаточно
 `docker network create intranet_net`); ~150 ГБ диска; sudo.
 
-1. Клонировать репо, восстановить артефакты (§2).
+1. Клонировать репо, восстановить артефакты (§2). Быстрый путь без переноса артефактов
+   с другой машины: `./scripts/prepare-host.sh` (проверки GPU/docker/диска, каталоги,
+   сеть, `.env.v031`) → `./scripts/fetch-torch-artifact.sh` (prebuilt torch) →
+   `./scripts/prepare-model.sh` (GGUF + токенизатор + config). Оба prepare-скрипта
+   идемпотентны, у каждого есть `--check`.
 2. Проверить образы: `docker images | grep sm61-v028`.
 3. Поднять рабочий стек (теперь — v029):
    ```sh

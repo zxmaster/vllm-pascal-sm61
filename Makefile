@@ -13,6 +13,7 @@ MODEL_NAME ?= Qwen3.5-4B-GGUF
 
 .PHONY: help refresh-source-cache source-cache extract-torch build up down build-log runtime-log logs status smoke \
 	sm61-source-cache sm61-extract-torch sm61-build sm61-up sm61-down sm61-build-log fetch-torch \
+	prepare-host prepare-model \
 	dflash-bench dflash-smoke
 
 help: ## Show available targets
@@ -33,6 +34,12 @@ sm61-extract-torch: extract-torch
 
 fetch-torch: ## Download the prebuilt sm_61 torch wheel (skips the hours-long build)
 	sh ./scripts/fetch-torch-artifact.sh
+
+prepare-host: ## Check the host (GPU, docker, disk) and create dirs, network, .env.v031
+	sh ./scripts/prepare-host.sh
+
+prepare-model: ## Download the reference GGUF model, tokenizer and config.json
+	sh ./scripts/prepare-model.sh
 
 build: ## Build local/vllm-openai:sm61
 	sh ./scripts/build-sm61-image.sh

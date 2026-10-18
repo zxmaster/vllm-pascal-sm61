@@ -39,6 +39,9 @@ SM61_ENV_FILE=.env.v031 ./scripts/build-sm61-image.sh   # torch build skipped
 ## Use it — option B: plain Python
 
 ```bash
+# straight from this release (verified: pip accepts the release URL directly)
+pip install --no-deps https://github.com/zxmaster/vllm-pascal-sm61/releases/download/torch-sm61-v2.13.0-r1/torch-2.13.0a0+gitcf30153-cp312-cp312-linux_x86_64.whl
+# or from a local file
 pip install --no-deps torch-2.13.0a0+gitcf30153-cp312-cp312-linux_x86_64.whl
 
 python -c "import torch; print(torch.__version__, torch.cuda.get_arch_list())"

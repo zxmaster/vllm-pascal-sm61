@@ -65,7 +65,11 @@ CUDA 12.9, `sm_61`, CPython 3.12:
 It unpacks into `artifacts/torch/site-packages/current/` (containing `torch/`, `torchgen/`,
 `functorch/`, `torch-*.dist-info/`); `build-sm61-image.sh` detects that tree and sets
 `SM61_USE_TORCH_ARTIFACT=1` by itself, so the torch build is skipped. The same wheel is
-pip-installable: `pip install --no-deps torch-2.13.0a0+gitcf30153-cp312-cp312-linux_x86_64.whl`.
+pip-installable — from a local file or straight from the release URL:
+
+```bash
+pip install --no-deps https://github.com/zxmaster/vllm-pascal-sm61/releases/download/torch-sm61-v2.13.0-r1/torch-2.13.0a0+gitcf30153-cp312-cp312-linux_x86_64.whl
+```
 
 Provenance, contents and verification steps: [`docs/RELEASE-TORCH.md`](docs/RELEASE-TORCH.md).
 If you prefer to build torch yourself, nothing else is needed — leave

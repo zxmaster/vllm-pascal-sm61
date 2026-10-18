@@ -37,12 +37,31 @@ vLLM вместо llama.cpp.
 - Тайлы для sm_61: BLOCK_M=16, BLOCK_N=64, BLOCK_K_BLOCKS=1 — 48 КБ shared memory
   (дефолтные 32/128/4 требуют 128 КБ и падают `OutOfResources`).
 
-## Ограничение
+## Ограничение (проверено 18.10.2026, не «что-то висело»)
 
-`vLLM` держит все веса на GPU. 3.54 ГиБ Q1_0 + CUDA context + буферы не влезают
-в 3.94 ГиБ. `--cpu-offload-gb` для GGUF-весов даёт `Total CPU offloaded
-parameters: 0.0` (не работает), `--cpu-offload-params` также не спасает.
-llama.cpp работает потому, что держит часть слоёв/весов вне VRAM (mmap + gpu-layers).
+Перед каждым запуском GPU проверялась: `nvidia-smi` = 6 МиБ занято, единственный
+процесс — сам Bonsai. Ни vLLM, ни bonsai-llm, ни vlm-server в это время GPU не держали.
+
+Картина при OOM (воспроизводится):
+
+```
+3.59 GiB allocated by PyTorch   (веса 3.52 GiB + буферы)
+0.25 GiB reserved but unallocated (фрагментация)
+~0.06 GiB CUDA context
+= 3.90 GiB из 3.94 GiB; свободно 29 MiB; нужен ещё блок 24 MiB
+```
+
+Перебрано без успеха: `MAX_MODEL_LEN` 2048 → 512 → 128, `MAX_NUM_BATCHED_TOKENS`
+1024 → 128 → 32, `ENABLE_PREFIX_CACHING=0`, KV fp16 вместо TurboQuant,
+`GPU_MEMORY_UTILIZATION` 0.97 / 0.98 / 0.99, `expandable_segments` (на Pascal
+CUDA VMM не работает: «memory mapping failed»), `max_split_size_mb`,
+`backend:cudaMallocAsync`, `--cpu-offload-gb` (даёт `Total CPU offloaded parameters:
+0.0` — offloader вызывается до материализации GGUF-параметров), `--cpu-offload-params`,
+`torch.cuda.empty_cache()` сразу после загрузки весов.
+
+Вывод: 4 ГБ физически не хватает — с учётом фрагментации нужно ≈4.4–4.5 ГБ.
+llama.cpp живёт на этой карте только за счёт mmap + частичного offload слоёв,
+чего у vLLM для GGUF нет.
 
 ## Как проверить на 6+ ГБ
 

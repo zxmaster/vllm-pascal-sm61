@@ -13,6 +13,7 @@
 #   ./scripts/prepare-model.sh              # download + verify
 #   ./scripts/prepare-model.sh --no-verify  # skip the sha256 check of the GGUF
 #   ./scripts/prepare-model.sh --check      # report what is present, download nothing
+#   ./scripts/prepare-model.sh --keep-architectures   # keep the upstream multimodal config
 set -eu
 
 GGUF_REPO=${GGUF_REPO:-unsloth/Qwen3.5-4B-GGUF}
@@ -24,10 +25,12 @@ TOK_FILES="config.json tokenizer.json tokenizer_config.json vocab.json merges.tx
 
 VERIFY=1
 CHECK_ONLY=0
+KEEP_ARCHITECTURES=0
 for arg in "$@"; do
   case "$arg" in
     --no-verify) VERIFY=0 ;;
     --check) CHECK_ONLY=1 ;;
+    --keep-architectures) KEEP_ARCHITECTURES=1 ;;
     -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
@@ -112,6 +115,30 @@ if [ ! -f "$CONFIG_DIR/config.json" ] && [ "$CHECK_ONLY" = "0" ]; then
     cp "$snap_config" "$CONFIG_DIR/config.json"
   fi
   [ -f "$CONFIG_DIR/config.json" ] || { echo "!! could not place $CONFIG_DIR/config.json" >&2; exit 1; }
+fi
+
+# The reference stacks run the text-only path (--language-model-only), whose config
+# declares a single architecture: Qwen3_5ForCausalLM. The upstream file declares the
+# multimodal wrapper (Qwen3_5ForConditionalGeneration); the stack was validated with the
+# text-only form, so pin it here. Everything else in the file stays upstream's.
+if [ -f "$CONFIG_DIR/config.json" ] && [ "$KEEP_ARCHITECTURES" = "0" ]; then
+  python3 - "$CONFIG_DIR/config.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as fh:
+    cfg = json.load(fh)
+arch = cfg.get("architectures") or []
+if arch == ["Qwen3_5ForCausalLM"]:
+    print("== config.json already pins the text-only architecture")
+elif arch == ["Qwen3_5ForConditionalGeneration"]:
+    cfg["architectures"] = ["Qwen3_5ForCausalLM"]
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh, indent=2)
+        fh.write("\n")
+    print("== config.json: architectures -> Qwen3_5ForCausalLM (text-only path, as validated)")
+else:
+    print(f"== config.json: leaving architectures as {arch} (unexpected value)")
+PY
 fi
 
 # --- 3. report -------------------------------------------------------------

@@ -34,6 +34,9 @@ SM61_ENV_FILE=.env.v031 ./scripts/build-sm61-source-cache.sh
 SM61_ENV_FILE=.env.v031 ./scripts/build-sm61-image.sh   # torch build skipped
 ```
 
+`prepare-model.sh` downloads the reference GGUF (sha256-pinned), the upstream tokenizer and
+`config.json` (pinned to the text-only architecture the stacks were validated with).
+
 `fetch-torch-artifact.sh` unpacks the wheel into
 `artifacts/torch/site-packages/current/`, which is the layout the Dockerfile expects;
 `build-sm61-image.sh` then detects it and sets `SM61_USE_TORCH_ARTIFACT=1` by itself.

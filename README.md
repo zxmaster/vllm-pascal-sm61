@@ -106,7 +106,7 @@ Typical wall-clock on a 4-core laptop (i7-7700HQ, MAX_JOBS=4), reference run:
 |---|---|---|
 | `prepare-host.sh` | seconds | idempotent |
 | `fetch-torch-artifact.sh` | ~2 min | 288 MB download + unpack |
-| `prepare-model.sh` | minutes | 2.3 GiB GGUF + tokenizer; network-bound |
+| `prepare-model.sh` | 2–40 min | 2.3 GiB GGUF + tokenizer; network-bound (37 min at 1.3 MB/s) |
 | `build-sm61-source-cache.sh` | 10–30 min | git clones of torch + vLLM (submodules) |
 | `build-sm61-image.sh` | **~40 min** | vLLM compiled for `sm_61`; torch build skipped |
 | first request | ~3 min | lazy load, KV pool printed in the log |
@@ -114,6 +114,11 @@ Typical wall-clock on a 4-core laptop (i7-7700HQ, MAX_JOBS=4), reference run:
 The torch compile — the step that used to dominate — is gone: the wheel replaces several
 hours of CPU time. If you skip `fetch-torch-artifact.sh`, the same build compiles torch from
 source instead.
+
+`prepare-model.sh` also pins `architectures` in `config.json` to `Qwen3_5ForCausalLM`: the
+stacks run the text-only path (`--language-model-only`), while the upstream file declares the
+multimodal wrapper. Everything else in that file stays upstream's (`--keep-architectures`
+leaves it untouched).
 
 Expected log markers from a healthy start (`docker logs vllm-openai-v031`):
 

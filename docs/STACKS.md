@@ -55,6 +55,8 @@ The AI gateway keeps a single model list in `config.yaml`:
 
 vLLM does **not** require FP16 weights: it loads quantized GGUF through
 `vllm-gguf-plugin`. The plugin supports the IQ1/IQ2/IQ3/IQ4 families and Q2_K–Q8_1.
-It does **not** implement `Q1_0` / `TQ1_0` / `TQ2_0`, which is what Bonsai-27B uses.
-That is a missing kernel, not a fundamental limitation — a 1-bit build inside vLLM
-would need a dequantize + GEMV kernel added to the plugin.
+Upstream does **not** implement `Q1_0` / `TQ1_0` / `TQ2_0` — the quantizations used by
+Bonsai-27B. We added `Q1_0` ourselves: see `docs/Q1_0-BONSAI.md` (Triton dequant +
+fused GEMM, bit-exact against the llama.cpp reference). The remaining limit is
+hardware: Bonsai's 3.54 GiB of 1-bit weights do not fit into a 4 GB card next to the
+CUDA context — a 6 GB GPU or larger is required.

@@ -1,0 +1,37 @@
+# compose.minicpm5.yaml — vLLM Pascal: MiniCPM5-2B (IQ4_XS GGUF) pilot.
+# Отдельный стек для тестов новой модели; делит GPU с vllm-openai-v028
+# (одновременно нельзя — сначала остановить v028). restart: "no" — чтобы
+# после ребута хост не поднимал оба стека на одной GPU.
+# Entrypoint переиспользует start-vllm-v028.sh (полностью параметризован env).
+
+name: vllm-minicpm5
+
+services:
+  vllm-minicpm5:
+    image: local/vllm-openai:sm61-v028
+    pull_policy: never
+    container_name: vllm-minicpm5
+    restart: "no"
+    runtime: nvidia
+    cap_add:
+      - SYS_ADMIN
+    env_file:
+      - ${VLLM_ENV_FILE:-.env.minicpm5}
+    ipc: host
+    shm_size: 2g
+    volumes:
+      - ./scripts:/workspace/scripts:ro
+      - ./volumes/models:/models
+      - ./volumes/hf-cache:/root/.cache/huggingface
+      - ./volumes/hf-configs:/hf-configs:ro
+      - ./volumes/vllm-cache:/root/.cache/vllm
+      - ./logs:/logs
+    working_dir: /workspace
+    entrypoint: ["sh", "/workspace/scripts/start-vllm-v028.sh"]
+    networks:
+      intranet_net:
+        ipv4_address: 172.18.100.8
+
+networks:
+  intranet_net:
+    external: true

@@ -1,0 +1,15 @@
+vllm-pascal
+Copyright 2026 vllm-pascal contributors
+
+This product includes software developed by the vLLM project
+(https://github.com/vllm-project/vllm), licensed under the Apache License 2.0.
+
+Our build-time and runtime patches, Dockerfiles, compose files and scripts are
+provided under the Apache License 2.0 as well.
+
+The patches in this repository modify vLLM source files at build time; those
+modifications are applied on the user's machine to a copy downloaded from the
+official upstream repository. vLLM source code is not redistributed here.
+
+TurboQuant is used natively from vLLM 0.28+; no external GPL submodule is
+included or required. Model weights are not included in this repository.

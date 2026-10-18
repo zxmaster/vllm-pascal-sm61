@@ -1,0 +1,7 @@
+.git
+.env
+pass.txt
+logs/
+volumes/
+INSTRUCTIONS.md
+docker/sm61/git-cache/

@@ -1,0 +1,6 @@
+source_image=local/vllm-openai:sm61-v028
+package_root=artifacts/torch/site-packages/extract-20260903T012735Z
+torch_package=torch
+torchgen_package=torchgen
+functorch_package=functorch
+torch_dist_info=torch-2.13.0a0+gitcf30153.dist-info

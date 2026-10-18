@@ -1,0 +1,21 @@
+FROM vllm/vllm-openai:v0.28.0-cu129
+
+# v0.28 source cache: git clones of PyTorch (2.13, built from source for
+# sm_61 — official wheels are sm_75+ only) and vLLM (0.28.0).
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG TORCH_REF=v2.13.0
+ARG VLLM_REF=v0.28.0
+ARG TORCH_URL=https://github.com/pytorch/pytorch.git
+ARG VLLM_URL=https://github.com/vllm-project/vllm.git
+ARG GIT_SUBMODULE_JOBS=8
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --branch ${TORCH_REF} --depth 1 --filter=blob:none ${TORCH_URL} /opt/src/pytorch && \
+    cd /opt/src/pytorch && \
+    git submodule update --init --recursive --depth 1 --jobs ${GIT_SUBMODULE_JOBS} && \
+    git clone --branch ${VLLM_REF} --depth 1 --filter=blob:none ${VLLM_URL} /opt/src/vllm

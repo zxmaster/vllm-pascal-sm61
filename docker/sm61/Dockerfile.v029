@@ -1,0 +1,324 @@
+# syntax=docker/dockerfile:1
+# vLLM Pascal (sm_61) — v0.29.0 upgrade build.
+#
+# Based on the proven v0.18 Dockerfile. Deltas for v0.29:
+#   - BASE_IMAGE pinned to vllm/vllm-openai:v0.29.0-cu129 (no moving :latest)
+#   - VLLM_REF=v0.29.0, TORCH_REF=v2.13.0 (torch reused via artifact; source:
+#     official 2.13 wheels ship only sm_75+ SASS — verified "no kernel image")
+#   - patch-vllm-sm61-v029.py (FA disable only; GGUF fixes live in the plugin)
+#   - vllm-gguf-plugin installed after the vllm build (_C_gguf built for sm_61)
+#   - start-vllm-v029.sh entrypoint (GDN/SDPA torch fallbacks via
+#     pascal_runtime_patch.py)
+#
+# Torch artifact reuse (USE_TORCH_ARTIFACT=1) keeps the expensive torch build
+# a one-time cost: build with =0 once, extract via
+# scripts/extract-sm61-torch-artifact.sh, then all future builds reuse it.
+
+ARG SOURCE_CACHE_IMAGE=local/vllm-source-cache:sm61-v029
+ARG BASE_IMAGE=vllm/vllm-openai:v0.29.0-cu129
+
+FROM ${SOURCE_CACHE_IMAGE} AS source-cache
+
+FROM ${BASE_IMAGE}
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG TORCH_REF=v2.13.0
+ARG VLLM_REF=v0.29.0
+ARG MAX_JOBS=2
+ARG USE_TORCH_ARTIFACT=0
+ARG TORCH_ARTIFACT_SUBDIR=current
+ARG GGUF_PLUGIN_VERSION=0.0.5
+
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    CUDA_HOME=/usr/local/cuda \
+    CUDAToolkit_ROOT=/usr/local/cuda \
+    LIBRARY_PATH=/usr/local/cuda/targets/x86_64-linux/lib:/usr/local/cuda/targets/x86_64-linux/lib/stubs:/usr/local/cuda/lib64 \
+    TORCH_CUDA_ARCH_LIST=6.1 \
+    CMAKE_CUDA_ARCHITECTURES=61 \
+    CMAKE_ARGS=-DCMAKE_CUDA_ARCHITECTURES=61 \
+    MAX_JOBS=${MAX_JOBS} \
+    VLLM_USE_PRECOMPILED=0
+
+# --- build toolchain -------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    ccache \
+    cuda-cudart-dev-12-9 \
+    cmake \
+    curl \
+    ffmpeg \
+    gcc \
+    git \
+    libnuma-dev \
+    ninja-build \
+    pkg-config \
+    python3-dev \
+    && apt-get install -y --no-install-recommends cuda-profiler-api-12-9 \
+    && (apt-get install -y --no-install-recommends libnvidia-ml-dev || apt-get install -y --no-install-recommends nvidia-cuda-dev) \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m pip install --upgrade pip 'setuptools<81' wheel packaging ninja cmake
+
+# --- CUDA environment: symlink nvidia pip packages into /usr/local/cuda -----
+RUN set -eu; \
+    packages_root=/usr/local/lib/python3.12/dist-packages/nvidia; \
+    cuda_root=/usr/local/cuda; \
+    cuda_include="$cuda_root/include"; \
+    cuda_lib64="$cuda_root/lib64"; \
+    cuda_targets_include="$cuda_root/targets/x86_64-linux/include"; \
+    cuda_targets_lib="$cuda_root/targets/x86_64-linux/lib"; \
+    test -d "$packages_root"; \
+    mkdir -p "$cuda_include" "$cuda_lib64" "$cuda_targets_include" "$cuda_targets_lib"; \
+    echo "Using nvidia package root: $packages_root"; \
+    for include_dir in "$packages_root"/*/include; do \
+        case "$include_dir" in */cu13/*) continue ;; esac; \
+        [ -d "$include_dir" ] || continue; \
+        for item in "$include_dir"/*; do \
+            [ -e "$item" ] || continue; \
+            ln -sf "$item" "$cuda_include/$(basename "$item")"; \
+            ln -sf "$item" "$cuda_targets_include/$(basename "$item")"; \
+        done; \
+    done; \
+    for lib_dir in "$packages_root"/*/lib; do \
+        case "$lib_dir" in */cu13/*) continue ;; esac; \
+        [ -d "$lib_dir" ] || continue; \
+        for item in "$lib_dir"/*; do \
+            [ -e "$item" ] || continue; \
+            base=$(basename "$item"); \
+            ln -sf "$item" "$cuda_lib64/$base"; \
+            ln -sf "$item" "$cuda_targets_lib/$base"; \
+            case "$base" in \
+                *.so.*) \
+                    unversioned=${base%%.so.*}.so; \
+                    ln -sf "$base" "$cuda_lib64/$unversioned"; \
+                    ln -sf "$base" "$cuda_targets_lib/$unversioned"; \
+                    ;; \
+            esac; \
+        done; \
+    done
+
+RUN set -eu; \
+    packages_root=/usr/local/lib/python3.12/dist-packages/nvidia; \
+    cuda_root=/usr/local/cuda; \
+    cuda_lib64="$cuda_root/lib64"; \
+    cuda_targets_lib="$cuda_root/targets/x86_64-linux/lib"; \
+    for required in \
+        "$packages_root/cublas/lib/libcublas.so.12" \
+        "$packages_root/cufft/lib/libcufft.so.11" \
+        "$packages_root/cusolver/lib/libcusolver.so.11" \
+        "$packages_root/cusparse/lib/libcusparse.so.12" \
+        "$packages_root/cuda_nvrtc/lib/libnvrtc.so.12" \
+        "$packages_root/cufile/lib/libcufile.so.0"; do \
+        [ -e "$required" ] || { echo "Missing required CUDA library: $required"; exit 1; }; \
+    done; \
+    ln -sf "$packages_root/cublas/lib/libcublas.so.12" "$cuda_lib64/libcublas.so"; \
+    ln -sf "$packages_root/cufft/lib/libcufft.so.11" "$cuda_lib64/libcufft.so"; \
+    ln -sf "$packages_root/cusolver/lib/libcusolver.so.11" "$cuda_lib64/libcusolver.so"; \
+    ln -sf "$packages_root/cusparse/lib/libcusparse.so.12" "$cuda_lib64/libcusparse.so"; \
+    ln -sf "$packages_root/cuda_nvrtc/lib/libnvrtc.so.12" "$cuda_lib64/libnvrtc.so"; \
+    ln -sf "$packages_root/cufile/lib/libcufile.so.0" "$cuda_lib64/libcufile.so"; \
+    ln -sf "$packages_root/cublas/lib/libcublas.so.12" "$cuda_targets_lib/libcublas.so"; \
+    ln -sf "$packages_root/cufft/lib/libcufft.so.11" "$cuda_targets_lib/libcufft.so"; \
+    ln -sf "$packages_root/cusolver/lib/libcusolver.so.11" "$cuda_targets_lib/libcusolver.so"; \
+    ln -sf "$packages_root/cusparse/lib/libcusparse.so.12" "$cuda_targets_lib/libcusparse.so"; \
+    ln -sf "$packages_root/cuda_nvrtc/lib/libnvrtc.so.12" "$cuda_targets_lib/libnvrtc.so"; \
+    ln -sf "$packages_root/cufile/lib/libcufile.so.0" "$cuda_targets_lib/libcufile.so"
+
+RUN set -eu; \
+    cuda_root=/usr/local/cuda; \
+    cuda_lib64="$cuda_root/lib64"; \
+    cuda_targets_lib="$cuda_root/targets/x86_64-linux/lib"; \
+    resolved_cuda_lib64=$(readlink -f "$cuda_lib64"); \
+    resolved_cuda_targets_lib=$(readlink -f "$cuda_targets_lib"); \
+    mkdir -p "$cuda_lib64" "$cuda_targets_lib" /usr/lib/x86_64-linux-gnu; \
+    for static_lib in libcudadevrt.a libcudart_static.a; do \
+        source_path=$(find "$resolved_cuda_targets_lib" /usr/local/cuda-* /usr/local/lib/python3.12/dist-packages/nvidia -name "$static_lib" -print -quit 2>/dev/null || true); \
+        [ -n "$source_path" ] || { echo "Missing required CUDA static library: $static_lib"; exit 1; }; \
+        source_real=$(readlink -f "$source_path"); \
+        if [ "$source_real" != "$resolved_cuda_lib64/$static_lib" ]; then \
+            install -m 0644 "$source_real" "$resolved_cuda_lib64/$static_lib"; \
+        fi; \
+        if [ "$source_real" != "$resolved_cuda_targets_lib/$static_lib" ]; then \
+            install -m 0644 "$source_real" "$resolved_cuda_targets_lib/$static_lib"; \
+        fi; \
+        install -m 0644 "$source_real" "/usr/lib/x86_64-linux-gnu/$static_lib"; \
+        echo "Using CUDA static library $static_lib: $source_real"; \
+    done
+
+RUN set -eu; \
+    cuda_root=/usr/local/cuda; \
+    cuda_include="$cuda_root/include"; \
+    cuda_lib64="$cuda_root/lib64"; \
+    cuda_targets_include="$cuda_root/targets/x86_64-linux/include"; \
+    cuda_targets_lib="$cuda_root/targets/x86_64-linux/lib"; \
+    mkdir -p "$cuda_include" "$cuda_targets_include"; \
+    nvml_header=$(find /usr/include /usr/local/include /usr/lib -name nvml.h -print -quit 2>/dev/null || true); \
+    [ -n "$nvml_header" ] || { echo 'nvml.h not found after installing NVML development packages'; exit 1; }; \
+    ln -sf "$nvml_header" "$cuda_include/nvml.h"; \
+    ln -sf "$nvml_header" "$cuda_targets_include/nvml.h"; \
+    nvml_lib=$(find /usr/lib /usr/lib/x86_64-linux-gnu /usr/local/lib -name 'libnvidia-ml.so*' -print -quit 2>/dev/null || true); \
+    if [ -n "$nvml_lib" ]; then \
+        ln -sf "$nvml_lib" "$cuda_lib64/libnvidia-ml.so"; \
+        ln -sf "$nvml_lib" "$cuda_targets_lib/libnvidia-ml.so"; \
+    fi; \
+    echo "Using NVML header: $nvml_header"; \
+    if [ -n "$nvml_lib" ]; then echo "Using NVML library: $nvml_lib"; else echo 'NVML library symlink not created; only header was found'; fi
+
+RUN set -eu; \
+    cuda_root=/usr/local/cuda; \
+    cuda_include="$cuda_root/include"; \
+    cuda_targets_include="$cuda_root/targets/x86_64-linux/include"; \
+    mkdir -p "$cuda_include" "$cuda_targets_include"; \
+    profiler_header=$(find /usr/local/cuda /usr/local/cuda-* /usr/include /usr/local/include /usr/lib -name cuda_profiler_api.h -print -quit 2>/dev/null || true); \
+    [ -n "$profiler_header" ] || { echo 'cuda_profiler_api.h not found after installing CUDA profiler API package'; exit 1; }; \
+    if [ "$(readlink -f "$profiler_header")" != "$(readlink -f "$cuda_include/cuda_profiler_api.h" 2>/dev/null || printf '%s' "$cuda_include/cuda_profiler_api.h")" ]; then \
+        ln -sf "$profiler_header" "$cuda_include/cuda_profiler_api.h"; \
+    fi; \
+    if [ "$(readlink -f "$profiler_header")" != "$(readlink -f "$cuda_targets_include/cuda_profiler_api.h" 2>/dev/null || printf '%s' "$cuda_targets_include/cuda_profiler_api.h")" ]; then \
+        ln -sf "$profiler_header" "$cuda_targets_include/cuda_profiler_api.h"; \
+    fi
+
+# --- sources: PyTorch patches ------------------------------------------------
+COPY docker/sm61/patch-torch-fabric.py /usr/local/bin/patch-torch-fabric.py
+
+COPY --from=source-cache /opt/src/pytorch /tmp/pytorch
+COPY --from=source-cache /opt/src/vllm /tmp/vllm
+COPY artifacts/torch /opt/torch-artifacts
+
+# --- PyTorch 2.13 source build for sm_61 (one-time; artifact afterwards) ----
+RUN python3 /usr/local/bin/patch-torch-fabric.py
+
+RUN printf '%s\n' \
+    '# Copilot CUDA imported target shim' \
+    'message(STATUS "Copilot CUDA imported target shim active")' \
+    'function(_copilot_register_cuda_target target_name cache_var library_path)' \
+    '  if(EXISTS "${library_path}")' \
+    '    set(${cache_var} "${library_path}" CACHE FILEPATH "" FORCE)' \
+    '    if(NOT TARGET ${target_name})' \
+    '      add_library(${target_name} UNKNOWN IMPORTED)' \
+    '      set_property(TARGET ${target_name} PROPERTY IMPORTED_LOCATION "${library_path}")' \
+    '    endif()' \
+    '  endif()' \
+    'endfunction()' \
+    '' \
+    '_copilot_register_cuda_target(CUDA::cublas CUDA_cublas_LIBRARY "/usr/local/cuda/lib64/libcublas.so")' \
+    '_copilot_register_cuda_target(CUDA::cuFile CUDA_cuFile_LIBRARY "/usr/local/cuda/lib64/libcufile.so")' \
+    '_copilot_register_cuda_target(CUDA::cufft CUDA_cufft_LIBRARY "/usr/local/cuda/lib64/libcufft.so")' \
+    '_copilot_register_cuda_target(CUDA::cusolver CUDA_cusolver_LIBRARY "/usr/local/cuda/lib64/libcusolver.so")' \
+    '_copilot_register_cuda_target(CUDA::cusparse CUDA_cusparse_LIBRARY "/usr/local/cuda/lib64/libcusparse.so")' \
+    '_copilot_register_cuda_target(CUDA::nvrtc CUDA_nvrtc_LIBRARY "/usr/local/cuda/lib64/libnvrtc.so")' \
+    '' > /tmp/cuda-target-shim.cmake && \
+    sed '/find_package(CUDAToolkit REQUIRED)/r /tmp/cuda-target-shim.cmake' /tmp/pytorch/cmake/public/cuda.cmake > /tmp/pytorch/cmake/public/cuda.cmake.patched && \
+    mv /tmp/pytorch/cmake/public/cuda.cmake.patched /tmp/pytorch/cmake/public/cuda.cmake && \
+    grep -n 'Copilot CUDA imported target shim active' /tmp/pytorch/cmake/public/cuda.cmake
+
+RUN set -eu; \
+    cuda_root=/usr/local/cuda; \
+    cuda_lib64="$cuda_root/lib64"; \
+    cuda_targets_lib="$cuda_root/targets/x86_64-linux/lib"; \
+    resolved_cuda_lib64=$(readlink -f "$cuda_lib64"); \
+    resolved_cuda_targets_lib=$(readlink -f "$cuda_targets_lib"); \
+    mkdir -p "$cuda_lib64" "$cuda_targets_lib" /usr/lib/x86_64-linux-gnu; \
+    for static_lib in libcudadevrt.a libcudart_static.a; do \
+        source_path=$(find "$resolved_cuda_targets_lib" /usr/local/cuda-* /usr/local/lib/python3.12/dist-packages/nvidia -name "$static_lib" -print -quit 2>/dev/null || true); \
+        [ -n "$source_path" ] || { echo "Missing required CUDA static library: $static_lib"; exit 1; }; \
+        source_real=$(readlink -f "$source_path"); \
+        if [ "$source_real" != "$resolved_cuda_lib64/$static_lib" ]; then \
+            install -m 0644 "$source_real" "$resolved_cuda_lib64/$static_lib"; \
+        fi; \
+        if [ "$source_real" != "$resolved_cuda_targets_lib/$static_lib" ]; then \
+            install -m 0644 "$source_real" "$resolved_cuda_targets_lib/$static_lib"; \
+        fi; \
+        install -m 0644 "$source_real" "/usr/lib/x86_64-linux-gnu/$static_lib"; \
+        echo "Using CUDA static library $static_lib: $source_real"; \
+    done
+
+RUN if [ "$USE_TORCH_ARTIFACT" = "1" ]; then \
+        artifact_root="/opt/torch-artifacts/site-packages/$TORCH_ARTIFACT_SUBDIR"; \
+        [ -d "$artifact_root/torch" ] || { echo "Missing torch artifact directory: $artifact_root/torch"; exit 1; }; \
+        set -- "$artifact_root"/torch-*.dist-info; \
+        [ -e "$1" ] || { echo "Missing torch dist-info artifact in $artifact_root"; exit 1; }; \
+        rm -rf \
+            /usr/local/lib/python3.12/dist-packages/torch \
+            /usr/local/lib/python3.12/dist-packages/torchgen \
+            /usr/local/lib/python3.12/dist-packages/functorch \
+            /usr/local/lib/python3.12/dist-packages/torch-*.dist-info; \
+        cp -a \
+            "$artifact_root/torch" \
+            "$artifact_root/torchgen" \
+            "$artifact_root/functorch" \
+            "$1" \
+            /usr/local/lib/python3.12/dist-packages/; \
+        python3 -m pip show torch; \
+        rm -rf /tmp/pytorch; \
+    else \
+        cd /tmp/pytorch && \
+        git submodule update --init --recursive && \
+        python3 -m pip install -r requirements.txt && \
+        USE_CUDA=1 BUILD_TEST=0 python3 -m pip install --no-build-isolation . && \
+        rm -rf /tmp/pytorch; \
+    fi
+
+RUN set -eu; \
+    cuda_root=/usr/local/cuda; \
+    cuda_lib64="$cuda_root/lib64"; \
+    cuda_targets_lib="$cuda_root/targets/x86_64-linux/lib"; \
+    resolved_cuda_lib64=$(readlink -f "$cuda_lib64"); \
+    resolved_cuda_targets_lib=$(readlink -f "$cuda_targets_lib"); \
+    mkdir -p "$cuda_lib64" "$cuda_targets_lib" /usr/lib/x86_64-linux-gnu; \
+    for static_lib in libcudadevrt.a libcudart_static.a; do \
+        source_path=$(find "$resolved_cuda_targets_lib" /usr/local/cuda-* /usr/local/lib/python3.12/dist-packages/nvidia -name "$static_lib" -print -quit 2>/dev/null || true); \
+        [ -n "$source_path" ] || { echo "Missing required CUDA static library after PyTorch install: $static_lib"; exit 1; }; \
+        source_real=$(readlink -f "$source_path"); \
+        if [ "$source_real" != "$resolved_cuda_lib64/$static_lib" ]; then \
+            install -m 0644 "$source_real" "$resolved_cuda_lib64/$static_lib"; \
+        fi; \
+        if [ "$source_real" != "$resolved_cuda_targets_lib/$static_lib" ]; then \
+            install -m 0644 "$source_real" "$resolved_cuda_targets_lib/$static_lib"; \
+        fi; \
+        install -m 0644 "$source_real" "/usr/lib/x86_64-linux-gnu/$static_lib"; \
+        echo "Re-linked CUDA static library after PyTorch install $static_lib: $source_real"; \
+    done; \
+    printf 'int main(){return 0;}\n' > /tmp/cuda-static-link.cpp; \
+    g++ /tmp/cuda-static-link.cpp \
+    -L/usr/local/cuda/bin/../targets/x86_64-linux/lib/stubs \
+    -L/usr/local/cuda/bin/../targets/x86_64-linux/lib \
+    -L/usr/lib/x86_64-linux-gnu \
+    -Wl,--start-group \
+    -lcudadevrt \
+    -lcudart_static \
+    -lrt \
+    -lpthread \
+    -ldl \
+    -Wl,--end-group \
+    -o /tmp/cuda-static-link && \
+    rm -f /tmp/cuda-static-link.cpp /tmp/cuda-static-link
+
+# --- vLLM source build for sm_61 --------------------------------------------
+COPY docker/sm61/patch-vllm-sm61-v029.py /usr/local/bin/patch-vllm-sm61.py
+RUN cd /tmp/vllm && \
+    sed -i '/^torch==/d' requirements/build.txt 2>/dev/null || true; \
+    sed -i '/^torch==/d' requirements/build/cuda.txt && \
+    sed -i '/"torch == 2.13.0",/d' pyproject.toml && \
+    python3 /usr/local/bin/patch-vllm-sm61.py && \
+    python3 -m pip install -r requirements/build/cuda.txt && \
+    python3 -m pip install --no-build-isolation --no-deps . && \
+    rm -rf /tmp/vllm
+
+# --- GGUF plugin (compiles _C_gguf for sm_61) --------------------------------
+RUN TORCH_CUDA_ARCH_LIST=6.1 python3 -m pip install --no-deps --no-build-isolation --no-binary vllm-gguf-plugin vllm-gguf-plugin==${GGUF_PLUGIN_VERSION} && \
+    python3 -m pip install --no-deps gguf==0.19.0
+
+# --- Runtime -----------------------------------------------------------------
+COPY scripts/start-vllm-v029.sh /usr/local/bin/start-vllm.sh
+COPY docker/sm61/entrypoint.sh /usr/local/bin/entrypoint.sh
+
+RUN chmod +x /usr/local/bin/start-vllm.sh /usr/local/bin/entrypoint.sh
+
+WORKDIR /workspace
+ENTRYPOINT ["sh", "/usr/local/bin/entrypoint.sh"]

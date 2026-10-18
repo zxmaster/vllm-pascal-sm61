@@ -1,0 +1,63 @@
+# compose.sm61-v031.yaml — vLLM Pascal v0.31.0 service (upgraded from v0.28.0).
+# Контейнер vllm-openai-v031 (не конфликтует с v028; GPU одна — не запускать одновременно).
+# После валидации старый compose можно отключить.
+
+name: vllm-v031
+
+services:
+  vllm:
+    image: local/vllm-openai:sm61-v031
+    pull_policy: never
+    container_name: vllm-openai-v031
+    restart: unless-stopped
+    runtime: nvidia
+    cap_add:
+      - SYS_ADMIN
+    env_file:
+      - ${VLLM_ENV_FILE:-.env.v031}
+    ipc: host
+    shm_size: 2g
+    build:
+      context: .
+      dockerfile: ${SM61_DOCKERFILE:-docker/sm61/Dockerfile.v031}
+      args:
+        SOURCE_CACHE_IMAGE: ${SM61_SOURCE_CACHE_IMAGE:-local/vllm-source-cache:sm61-v031}
+        TORCH_REF: ${SM61_TORCH_REF:-v2.13.0}
+        VLLM_REF: ${SM61_VLLM_REF:-v0.31.0}
+        MAX_JOBS: ${SM61_MAX_JOBS:-2}
+        USE_TORCH_ARTIFACT: ${SM61_USE_TORCH_ARTIFACT:-0}
+        TORCH_ARTIFACT_SUBDIR: ${SM61_TORCH_ARTIFACT_SUBDIR:-current}
+        GGUF_PLUGIN_VERSION: ${SM61_GGUF_PLUGIN_VERSION:-0.0.5}
+    volumes:
+      - ./scripts:/workspace/scripts:ro
+      - ./volumes/models:/models
+      - ./volumes/hf-cache:/root/.cache/huggingface
+      - ./volumes/hf-configs:/hf-configs:ro
+      - ./volumes/vllm-cache:/root/.cache/vllm
+      - ./logs:/logs
+    working_dir: /workspace
+    entrypoint: ["sh", "/workspace/scripts/start-vllm-v031.sh"]
+    networks:
+      intranet_net:
+        ipv4_address: 172.18.100.9
+    labels:
+      - "sablier.enable=true"
+      - "sablier.group=vllm31"
+      - "traefik.enable=true"
+      - "traefik.docker.allownonrunning=true"
+      # plain-http API route for API clients (LibreChat / opencode), no TLS
+      - "traefik.http.routers.vllm-api-v031.rule=Host(`vllm.test`) && PathPrefix(`/v1`)"
+      - "traefik.http.routers.vllm-api-v031.entrypoints=web"
+      - "traefik.http.routers.vllm-api-v031.priority=310"
+      - "traefik.http.routers.vllm-api-v031.middlewares=vllm-sablier-v031@docker"
+
+      # Sablier ForwardAuth middleware (scale-to-zero, wake on request)
+      - "traefik.http.middlewares.vllm-sablier-v031.forwardauth.address=http://sablier:10000/api/strategies/dynamic?group=vllm31&session_duration=${SABLIER_SESSION_DURATION:-10m}"
+      - "traefik.http.middlewares.vllm-sablier-v031.forwardauth.maxResponseBodySize=1048576"
+      - "traefik.http.middlewares.vllm-sablier-v031.forwardauth.trustForwardHeader=true"
+
+      - "traefik.http.services.vllm-v031.loadbalancer.server.port=8000"
+
+networks:
+  intranet_net:
+    external: true
